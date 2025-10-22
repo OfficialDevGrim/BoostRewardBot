@@ -23,6 +23,7 @@ const {
   OWNER_IDS = '',
   DEFAULT_PET_ID = '5000000',
   DEFAULT_AMOUNT = '1',
+  DEFAULT_RARITY = 'normal', // NEW: default rarity (normal|golden|rainbow|darkmatter|shiny|all)
   DATA_DIR = './data',
   DS_NAME = 'DiscordBoostQueue_v1', // DataStore used by your Roblox server script
 } = process.env;
@@ -60,7 +61,31 @@ const client = new Client({
   partials: [Partials.GuildMember],
 });
 
+// --- Helpers ---
+function normRarity(s) {
+  if (!s) return 'normal';
+  s = String(s).toLowerCase();
+  const map = {
+    normal: 'normal', none: 'normal', default: 'normal',
+    gold: 'golden', golden: 'golden',
+    rb: 'rainbow', rainbow: 'rainbow',
+    dm: 'darkmatter', dark: 'darkmatter', darkmatter: 'darkmatter',
+    shiny: 'shiny',
+    all: 'all'
+  };
+  return map[s] || 'normal';
+}
+
 // --- Slash Commands ---
+const rarityChoices = [
+  ['normal','normal'],
+  ['golden','golden'],
+  ['rainbow','rainbow'],
+  ['darkmatter','darkmatter'],
+  ['shiny','shiny'],
+  ['all','all'],
+];
+
 const commands = [
   new SlashCommandBuilder()
     .setName('link')
@@ -73,6 +98,13 @@ const commands = [
   new SlashCommandBuilder()
     .setName('claimboost')
     .setDescription('Manually claim the booster pet if you were already boosting.')
+    .addStringOption((o) => {
+      o.setName('rarity')
+       .setDescription('normal | golden | rainbow | darkmatter | shiny | all')
+       .setRequired(false);
+      rarityChoices.forEach(([name, value]) => o.addChoices({ name, value }));
+      return o;
+    })
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -102,6 +134,14 @@ const commands = [
         .setDescription('Amount to grant (default from env).')
         .setRequired(false)
     )
+    .addStringOption((o) => {
+      o
+        .setName('rarity')
+        .setDescription('normal | golden | rainbow | darkmatter | shiny | all')
+        .setRequired(false);
+      rarityChoices.forEach(([name, value]) => o.addChoices({ name, value }));
+      return o;
+    })
     .addStringOption((o) =>
       o
         .setName('reason')
@@ -254,7 +294,7 @@ client.on(Events.InteractionCreate, async (i) => {
     links[i.user.id] = username;
     saveMap(links);
     await i.reply({
-      content: `Linked ✅ **${username}**. When you boost, I’ll send your in-game pet.`,
+      content: `Linked ✅ **${username}**.`,
       ephemeral: true,
     });
     return;
@@ -290,6 +330,7 @@ client.on(Events.InteractionCreate, async (i) => {
 
       const petId = Number(DEFAULT_PET_ID) || 5000000;
       const amount = Number(DEFAULT_AMOUNT) || 1;
+      const rarityOpt = normRarity(i.options.getString('rarity', false) || DEFAULT_RARITY);
 
       try {
         await publishToRoblox(TOPIC, {
@@ -297,7 +338,7 @@ client.on(Events.InteractionCreate, async (i) => {
           discordId: i.user.id,
           robloxUsername: username,
           robloxUserId,
-          reward: { kind: 'pet', id: petId, amount },
+          reward: { kind: 'pet', id: petId, amount, rarity: rarityOpt }, // rarity
           ts: Date.now(),
         });
       } catch (e) {
@@ -308,6 +349,7 @@ client.on(Events.InteractionCreate, async (i) => {
         await enqueueViaOpenCloud(robloxUserId, {
           petId,
           amount,
+          rarity: rarityOpt, // pass through to offline queue
           reason: null,
           admin: false,
         });
@@ -316,7 +358,7 @@ client.on(Events.InteractionCreate, async (i) => {
       }
 
       await i.editReply(
-        'Claim queued ✅ If a server was online it’s instant; otherwise you’ll get it next time you join.'
+        `Claim queued ✅ (${rarityOpt}). If a server was online it’s instant; otherwise you’ll get it next time you join.`
       );
     } catch (e) {
       console.error('claimboost error:', e);
@@ -340,6 +382,7 @@ client.on(Events.InteractionCreate, async (i) => {
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
       const petIdArg = i.options.getInteger('petid', false);
       const amountArg = i.options.getInteger('amount', false);
+      const rarityArg = normRarity(i.options.getString('rarity', false) || DEFAULT_RARITY);
       const reason = i.options.getString('reason', false) || null;
 
       const petId = Number(petIdArg ?? DEFAULT_PET_ID) || 5000000;
@@ -384,7 +427,7 @@ client.on(Events.InteractionCreate, async (i) => {
           targetDiscordId: targetDiscordUser?.id ?? null,
           robloxUsername,
           robloxUserId,
-          reward: { kind: 'pet', id: petId, amount },
+          reward: { kind: 'pet', id: petId, amount, rarity: rarityArg }, // rarity
           reason,
           meta: { resolvedVia },
           ts: Date.now(),
@@ -397,6 +440,7 @@ client.on(Events.InteractionCreate, async (i) => {
         await enqueueViaOpenCloud(robloxUserId, {
           petId,
           amount,
+          rarity: rarityArg, // pass through to offline queue
           reason: reason || null,
           admin: true,
         });
@@ -410,6 +454,7 @@ client.on(Events.InteractionCreate, async (i) => {
           `• Roblox: **${robloxUsername}** (ID: ${robloxUserId})`,
           targetDiscordUser ? `• Discord: <@${targetDiscordUser.id}>` : null,
           `• Reward: Pet ${petId} × ${amount}`,
+          `• Rarity: ${rarityArg}`,
           reason ? `• Reason: ${reason}` : null,
           `• Via: ${resolvedVia}`,
           '• Delivery: instant if online; otherwise on next join',
@@ -459,6 +504,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 
       const petId = Number(DEFAULT_PET_ID) || 5000000;
       const amount = Number(DEFAULT_AMOUNT) || 1;
+      const rarity = normRarity(DEFAULT_RARITY);
 
       try {
         await publishToRoblox(TOPIC, {
@@ -466,7 +512,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
           discordId,
           robloxUsername: username,
           robloxUserId,
-          reward: { kind: 'pet', id: petId, amount },
+          reward: { kind: 'pet', id: petId, amount, rarity }, // rarity
           ts: Date.now(),
         });
       } catch (e) {
@@ -474,18 +520,18 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       }
 
       try {
-        await enqueueViaOpenCloud(robloxUserId, { petId, amount, reason: null, admin: false });
+        await enqueueViaOpenCloud(robloxUserId, { petId, amount, rarity, reason: null, admin: false });
       } catch (e) {
         console.error('Queue (DataStore) failed:', e);
       }
 
       await newMember
         .send(
-          `✨ Thanks for boosting! Your in-game reward (Pet ID **${petId}**) is queued. Join the game to receive it!`
+          `✨ Thanks for boosting! Your in-game reward (Pet ID **${petId}**, rarity **${rarity}**) is queued. Join the game to receive it!`
         )
         .catch(() => {});
 
-      console.log(`Queued reward for Discord ${discordId} -> Roblox ${robloxUserId}`);
+      console.log(`Queued reward for Discord ${discordId} -> Roblox ${robloxUserId} (${rarity})`);
     }
   } catch (err) {
     console.error('Boost handler error:', err);
