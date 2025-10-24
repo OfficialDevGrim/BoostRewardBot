@@ -418,17 +418,18 @@ client.on(Events.InteractionCreate, async (i) => {
 
   // /grantpet
   if (i.commandName === 'grantpet') {
+    // FIRST: acknowledge (so Discord doesn't expire the token)
+    if (!i.replied && !i.deferred) {
+      await i.deferReply({ flags: 64 }); // ephemeral
+    }
+  
+    // THEN: permission check
     if (!isOwner(i.user.id)) {
-      if (!i.replied && !i.deferred) {
-        await i.reply({ content: 'This command is owner-only.', flags: 64 });
-      }
+      await i.editReply('This command is owner-only.');
       return;
     }
-
+  
     try {
-      if (!i.replied && !i.deferred) {
-        await i.deferReply({ flags: 64 });
-      }
 
       const targetDiscordUser = i.options.getUser('discorduser', false);
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
