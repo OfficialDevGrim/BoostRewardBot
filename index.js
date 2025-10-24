@@ -1,5 +1,20 @@
 // index.js — Discord → Roblox Boost Reward Bot (Node 18+ / 22+)
 
+const express = require('express'); // <-- NEW
+const keepAliveApp = express();     // <-- NEW
+
+keepAliveApp.get('/', (req, res) => {
+  res.send('BoostRewardBot alive'); // page content for pings
+});
+
+const PORT = process.env.PORT || 3000;
+keepAliveApp.listen(PORT, () => {
+  console.log('Keep-alive web server running on port', PORT);
+});
+// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// Render uses this so it thinks you're a web service and keeps you up
+// ---
+
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
@@ -295,7 +310,7 @@ client.on(Events.InteractionCreate, async (i) => {
     saveMap(links);
     await i.reply({
       content: `Linked ✅ **${username}**.`,
-      ephemeral: true,
+      flags: 64,
     });
     return;
   }
@@ -307,12 +322,12 @@ client.on(Events.InteractionCreate, async (i) => {
         await i.reply({
           content:
             'This command is only for **current server boosters**. Boost the server, then run /claimboost.',
-          ephemeral: true,
+          flags: 64,
         });
         return;
       }
 
-      await i.deferReply({ ephemeral: true });
+      await i.deferReply({ flags: 64 });
       const links = loadMap();
       const username = links[i.user.id];
       if (!username) {
@@ -372,12 +387,12 @@ client.on(Events.InteractionCreate, async (i) => {
   // /grantpet
   if (i.commandName === 'grantpet') {
     if (!isOwner(i.user.id)) {
-      await i.reply({ content: 'This command is owner-only.', ephemeral: true });
+      await i.reply({ content: 'This command is owner-only.', flags: 64 });
       return;
     }
 
     try {
-      await i.deferReply({ ephemeral: true });
+      await i.deferReply({ flags: 64 });
       const targetDiscordUser = i.options.getUser('discorduser', false);
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
       const petIdArg = i.options.getInteger('petid', false);
