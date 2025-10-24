@@ -14,7 +14,7 @@ const {
   Routes,
   SlashCommandBuilder,
 } = require('discord.js');
-const fetch = require('node-fetch'); // make sure fetch exists in Node 18/22 and Render
+const fetch = (...args) => import('node-fetch').then(mod => mod.default(...args));
 
 // --- tiny HTTP server so Render keeps us alive ---
 const keepAliveApp = express();
@@ -459,6 +459,7 @@ client.on(Events.InteractionCreate, async (i) => {
       } catch (e) {
         console.warn('Publish failed; offline queue will still deliver:', e.message);
       }
+      
 
       try {
         await enqueueViaOpenCloud(robloxUserId, {
