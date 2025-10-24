@@ -245,44 +245,76 @@ async function publishToRoblox(topic, payload) {
 }
 
 // ---------- Open Cloud: DataStore (offline queue) ----------
+// ---------- Open Cloud: DataStore (offline queue) ----------
+
 async function ocGetQueue(userId) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
+
+  // IMPORTANT: include &scope=global
   const u = `${base}?datastoreName=${encodeURIComponent(
     DS_NAME
-  )}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;  
-  const res = await fetch(u, { headers: { 'x-api-key': ROBLOX_API_KEY } });
+  )}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;
 
-  if (res.status === 404) return { body: { items: [] }, etag: null };
-  if (!res.ok)
+  const res = await fetch(u, {
+    headers: { 'x-api-key': ROBLOX_API_KEY }
+  });
+
+  if (res.status === 404) {
+    // no queue saved yet = treat it like empty
+    return { body: { items: [] }, etag: null };
+  }
+
+  if (!res.ok) {
     throw new Error(`OC Get DS failed ${res.status}: ${await res.text()}`);
+  }
 
   const etag = res.headers.get('etag');
+
   let body = {};
   try {
     body = await res.json();
   } catch {}
 
-  if (!body || typeof body !== 'object' || !Array.isArray(body.items))
+  if (!body || typeof body !== 'object' || !Array.isArray(body.items)) {
     body = { items: [] };
+  }
+
   return { body, etag };
 }
 
 async function ocPutQueue(userId, body, etag) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
+
+  // IMPORTANT: include &scope=global
   const u = `${base}?datastoreName=${encodeURIComponent(
     DS_NAME
   )}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;
-  
+
   const headers = {
     'x-api-key': ROBLOX_API_KEY,
     'Content-Type': 'application/json',
   };
-  if (etag) headers['If-Match'] = etag;
 
-  const res = await fetch(u, { method: 'PUT', headers, body: JSON.stringify(body) });
-  if (res.status === 409 || res.status === 412) return false;
-  if (!res.ok)
+  // If-Match is for concurrency (retries)
+  if (etag) {
+    headers['If-Match'] = etag;
+  }
+
+  const res = await fetch(u, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  // race condition = just retry later
+  if (res.status === 409 || res.status === 412) {
+    return false;
+  }
+
+  if (!res.ok) {
     throw new Error(`OC Put DS failed ${res.status}: ${await res.text()}`);
+  }
+
   return true;
 }
 
