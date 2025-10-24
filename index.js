@@ -244,23 +244,21 @@ async function publishToRoblox(topic, payload) {
   console.log('Publish OK');
 }
 
-// ---------- Open Cloud: DataStore (offline queue) ----------
-// ---------- Open Cloud: DataStore (offline queue) ----------
 
 async function ocGetQueue(userId) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
-
-  // IMPORTANT: include &scope=global
   const u = `${base}?datastoreName=${encodeURIComponent(
     DS_NAME
   )}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;
 
   const res = await fetch(u, {
-    headers: { 'x-api-key': ROBLOX_API_KEY }
+    headers: {
+      'x-api-key': ROBLOX_API_KEY,
+    },
   });
 
   if (res.status === 404) {
-    // no queue saved yet = treat it like empty
+    // means this user doesn't have a queue saved yet, that's fine
     return { body: { items: [] }, etag: null };
   }
 
@@ -269,7 +267,6 @@ async function ocGetQueue(userId) {
   }
 
   const etag = res.headers.get('etag');
-
   let body = {};
   try {
     body = await res.json();
@@ -284,8 +281,6 @@ async function ocGetQueue(userId) {
 
 async function ocPutQueue(userId, body, etag) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
-
-  // IMPORTANT: include &scope=global
   const u = `${base}?datastoreName=${encodeURIComponent(
     DS_NAME
   )}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;
@@ -294,8 +289,6 @@ async function ocPutQueue(userId, body, etag) {
     'x-api-key': ROBLOX_API_KEY,
     'Content-Type': 'application/json',
   };
-
-  // If-Match is for concurrency (retries)
   if (etag) {
     headers['If-Match'] = etag;
   }
@@ -306,7 +299,7 @@ async function ocPutQueue(userId, body, etag) {
     body: JSON.stringify(body),
   });
 
-  // race condition = just retry later
+  // 409 / 412 = version conflict, means "retry"
   if (res.status === 409 || res.status === 412) {
     return false;
   }
