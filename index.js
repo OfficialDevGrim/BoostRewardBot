@@ -327,7 +327,10 @@ client.on(Events.InteractionCreate, async (i) => {
         return;
       }
 
-      await i.deferReply({ flags: 64 });
+      if (!i.replied && !i.deferred) {
+        await i.deferReply({ flags: 64 });
+      }
+      
       const links = loadMap();
       const username = links[i.user.id];
       if (!username) {
@@ -387,12 +390,17 @@ client.on(Events.InteractionCreate, async (i) => {
   // /grantpet
   if (i.commandName === 'grantpet') {
     if (!isOwner(i.user.id)) {
-      await i.reply({ content: 'This command is owner-only.', flags: 64 });
+      if (!i.replied && !i.deferred) {
+        await i.reply({ content: 'This command is owner-only.', flags: 64 });
+      }
       return;
     }
-
+    
     try {
-      await i.deferReply({ flags: 64 });
+      if (!i.replied && !i.deferred) {
+        await i.deferReply({ flags: 64 });
+      }
+    
       const targetDiscordUser = i.options.getUser('discorduser', false);
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
       const petIdArg = i.options.getInteger('petid', false);
