@@ -249,7 +249,7 @@ async function ocGetQueue(userId) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
   const u = `${base}?datastoreName=${encodeURIComponent(
     DS_NAME
-  )}&entryKey=${encodeURIComponent(String(userId))}`;
+  )}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;  
   const res = await fetch(u, { headers: { 'x-api-key': ROBLOX_API_KEY } });
 
   if (res.status === 404) return { body: { items: [] }, etag: null };
@@ -271,8 +271,8 @@ async function ocPutQueue(userId, body, etag) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
   const u = `${base}?datastoreName=${encodeURIComponent(
     DS_NAME
-  )}&entryKey=${encodeURIComponent(String(userId))}`;
-
+  )}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;
+  
   const headers = {
     'x-api-key': ROBLOX_API_KEY,
     'Content-Type': 'application/json',
