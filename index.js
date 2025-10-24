@@ -350,9 +350,9 @@ client.on(Events.InteractionCreate, async (i) => {
           petId,
           amount,
           rarity: rarityOpt, // pass through to offline queue
-          reason: null,
+          reason: "Thanks for boosting the server! Your reward has been delivered.",
           admin: false,
-        });
+        });        
       } catch (e) {
         console.error('Queue (DataStore) failed:', e);
       }
@@ -441,7 +441,7 @@ client.on(Events.InteractionCreate, async (i) => {
           petId,
           amount,
           rarity: rarityArg, // pass through to offline queue
-          reason: reason || null,
+          reason: reason || "An admin granted you a reward.",
           admin: true,
         });
       } catch (e) {
@@ -538,7 +538,6 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
-// --- Bootstrap ---
 client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
   try {
