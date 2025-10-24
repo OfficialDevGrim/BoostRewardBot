@@ -1,21 +1,8 @@
 // index.js — Discord → Roblox Boost Reward Bot (Node 18+ / 22+)
 
-const express = require('express'); // <-- NEW
-const keepAliveApp = express();     // <-- NEW
+require('dotenv').config(); // load .env FIRST so everything below can read it
 
-keepAliveApp.get('/', (req, res) => {
-  res.send('BoostRewardBot alive'); // page content for pings
-});
-
-const PORT = process.env.PORT || 3000;
-keepAliveApp.listen(PORT, () => {
-  console.log('Keep-alive web server running on port', PORT);
-});
-// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-// Render uses this so it thinks you're a web service and keeps you up
-// ---
-
-require('dotenv').config();
+const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -27,6 +14,17 @@ const {
   Routes,
   SlashCommandBuilder,
 } = require('discord.js');
+const fetch = require('node-fetch'); // make sure fetch exists in Node 18/22 and Render
+
+// --- tiny HTTP server so Render keeps us alive ---
+const keepAliveApp = express();
+keepAliveApp.get('/', (req, res) => {
+  res.send('BoostRewardBot alive');
+});
+const PORT = process.env.PORT || 3000;
+keepAliveApp.listen(PORT, () => {
+  console.log('Keep-alive web server running on port', PORT);
+});
 
 // --- Env ---
 const {
@@ -38,9 +36,9 @@ const {
   OWNER_IDS = '',
   DEFAULT_PET_ID = '5000000',
   DEFAULT_AMOUNT = '1',
-  DEFAULT_RARITY = 'normal', // NEW: default rarity (normal|golden|rainbow|darkmatter|shiny|all)
+  DEFAULT_RARITY = 'normal', // normal|golden|rainbow|darkmatter|shiny|all
   DATA_DIR = './data',
-  DS_NAME = 'DiscordBoostQueue_v1', // DataStore used by your Roblox server script
+  DS_NAME = 'DiscordBoostQueue_v1',
 } = process.env;
 
 if (!DISCORD_TOKEN || !GUILD_ID || !ROBLOX_UNIVERSE_ID || !ROBLOX_API_KEY) {
@@ -49,6 +47,8 @@ if (!DISCORD_TOKEN || !GUILD_ID || !ROBLOX_UNIVERSE_ID || !ROBLOX_API_KEY) {
   );
   process.exit(1);
 }
+
+console.log('BoostRewardBot loaded with topic:', TOPIC, 'Universe:', ROBLOX_UNIVERSE_ID);
 
 const OWNER_SET = new Set(
   OWNER_IDS.split(',').map((s) => s.trim()).filter(Boolean)
@@ -310,7 +310,7 @@ client.on(Events.InteractionCreate, async (i) => {
     saveMap(links);
     await i.reply({
       content: `Linked ✅ **${username}**.`,
-      flags: 64,
+      flags: 64, // ephemeral
     });
     return;
   }
@@ -330,7 +330,7 @@ client.on(Events.InteractionCreate, async (i) => {
       if (!i.replied && !i.deferred) {
         await i.deferReply({ flags: 64 });
       }
-      
+
       const links = loadMap();
       const username = links[i.user.id];
       if (!username) {
@@ -356,7 +356,8 @@ client.on(Events.InteractionCreate, async (i) => {
           discordId: i.user.id,
           robloxUsername: username,
           robloxUserId,
-          reward: { kind: 'pet', id: petId, amount, rarity: rarityOpt }, // rarity
+          reward: { kind: 'pet', id: petId, amount, rarity: rarityOpt },
+          reason: "Thanks for boosting the server! Your reward has been delivered.",
           ts: Date.now(),
         });
       } catch (e) {
@@ -367,10 +368,10 @@ client.on(Events.InteractionCreate, async (i) => {
         await enqueueViaOpenCloud(robloxUserId, {
           petId,
           amount,
-          rarity: rarityOpt, // pass through to offline queue
+          rarity: rarityOpt,
           reason: "Thanks for boosting the server! Your reward has been delivered.",
           admin: false,
-        });        
+        });
       } catch (e) {
         console.error('Queue (DataStore) failed:', e);
       }
@@ -395,12 +396,12 @@ client.on(Events.InteractionCreate, async (i) => {
       }
       return;
     }
-    
+
     try {
       if (!i.replied && !i.deferred) {
         await i.deferReply({ flags: 64 });
       }
-    
+
       const targetDiscordUser = i.options.getUser('discorduser', false);
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
       const petIdArg = i.options.getInteger('petid', false);
@@ -450,8 +451,8 @@ client.on(Events.InteractionCreate, async (i) => {
           targetDiscordId: targetDiscordUser?.id ?? null,
           robloxUsername,
           robloxUserId,
-          reward: { kind: 'pet', id: petId, amount, rarity: rarityArg }, // rarity
-          reason,
+          reward: { kind: 'pet', id: petId, amount, rarity: rarityArg },
+          reason: reason || "You’ve received a special admin reward!",
           meta: { resolvedVia },
           ts: Date.now(),
         });
@@ -463,8 +464,8 @@ client.on(Events.InteractionCreate, async (i) => {
         await enqueueViaOpenCloud(robloxUserId, {
           petId,
           amount,
-          rarity: rarityArg, // pass through to offline queue
-          reason: reason || "An admin granted you a reward.",
+          rarity: rarityArg,
+          reason: reason || "You’ve received a special admin reward!",
           admin: true,
         });
       } catch (e) {
@@ -502,7 +503,6 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     const before = oldMember?.premiumSince;
     const after = newMember?.premiumSince;
 
-    // Started boosting
     if (!before && after) {
       const links = loadMap();
       const discordId = newMember.id;
@@ -535,7 +535,8 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
           discordId,
           robloxUsername: username,
           robloxUserId,
-          reward: { kind: 'pet', id: petId, amount, rarity }, // rarity
+          reward: { kind: 'pet', id: petId, amount, rarity },
+          reason: "Thanks for boosting the server! Your reward has been delivered.",
           ts: Date.now(),
         });
       } catch (e) {
@@ -543,7 +544,13 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
       }
 
       try {
-        await enqueueViaOpenCloud(robloxUserId, { petId, amount, rarity, reason: null, admin: false });
+        await enqueueViaOpenCloud(robloxUserId, {
+          petId,
+          amount,
+          rarity,
+          reason: "Thanks for boosting the server! Your reward has been delivered.",
+          admin: false
+        });
       } catch (e) {
         console.error('Queue (DataStore) failed:', e);
       }
