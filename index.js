@@ -1,6 +1,6 @@
 // index.js — Discord → Roblox Boost Reward Bot (Node 18+ / 22+)
 
-require('dotenv').config(); // load .env FIRST so everything below can read it
+require('dotenv').config(); // load env FIRST
 
 const express = require('express');
 const fs = require('fs');
@@ -14,6 +14,8 @@ const {
   Routes,
   SlashCommandBuilder,
 } = require('discord.js');
+
+// ✅ fetch wrapper that works with node-fetch v3 on Render
 const fetch = (...args) => import('node-fetch').then(mod => mod.default(...args));
 
 // --- tiny HTTP server so Render keeps us alive ---
@@ -25,6 +27,7 @@ const PORT = process.env.PORT || 3000;
 keepAliveApp.listen(PORT, () => {
   console.log('Keep-alive web server running on port', PORT);
 });
+
 
 // --- Env ---
 const {
