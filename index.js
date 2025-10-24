@@ -73,11 +73,18 @@ function saveMap(m) {
   fs.writeFileSync(MAP_FILE, JSON.stringify(m, null, 2));
 }
 
-// --- Client ---
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
-  partials: [Partials.GuildMember],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages, // NEW
+  ],
+  partials: [
+    Partials.GuildMember,
+    Partials.Channel, // NEW (needed for DM interactions)
+  ],
 });
+
 
 // --- Helpers ---
 function normRarity(s) {
@@ -172,26 +179,43 @@ const commands = [
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 
 async function registerCommands(appId) {
-  await rest.put(Routes.applicationGuildCommands(appId, GUILD_ID), {
-    body: commands,
-  });
-  console.log('Slash commands registered: /link, /claimboost, /grantpet');
+  // fast refresh for your server
+  await rest.put(
+    Routes.applicationGuildCommands(appId, GUILD_ID),
+    { body: commands },
+  );
+  console.log('Guild slash commands registered.');
+
+  // global so commands show in DM with the bot
+  await rest.put(
+    Routes.applicationCommands(appId),
+    { body: commands },
+  );
+  console.log('Global slash commands registered (for DMs).');
 }
+
+
 
 function isOwner(discordUserId) {
   return OWNER_SET.has(discordUserId);
 }
-
 async function isServerBooster(i) {
-  if (!i.inGuild()) return false;
-  let member = i.member;
-  if (!member || !member.premiumSince) {
-    try {
-      member = await i.guild.members.fetch(i.user.id);
-    } catch {}
+  const guild =
+    client.guilds.cache.get(GUILD_ID) ||
+    (await client.guilds.fetch(GUILD_ID).catch(() => null));
+  if (!guild) return false;
+
+  let member;
+  try {
+    member = await guild.members.fetch(i.user.id);
+  } catch {
+    return false;
   }
+
   return Boolean(member?.premiumSince);
 }
+
+
 
 async function robloxUserIdFromUsername(username) {
   const url = 'https://users.roblox.com/v1/usernames/users';
@@ -346,26 +370,30 @@ client.on(Events.InteractionCreate, async (i) => {
   // /claimboost
   if (i.commandName === 'claimboost') {
     try {
+      // check boost in your main server even if they're in DM
       if (!(await isServerBooster(i))) {
         await i.reply({
           content:
-            'This command is only for **current server boosters**. Boost the server, then run /claimboost.',
+            'This command is only for **current server boosters** of our main server. ' +
+            'Boost the server first, then run /claimboost.',
           flags: 64,
         });
         return;
       }
-
+  
       if (!i.replied && !i.deferred) {
-        await i.deferReply({ flags: 64 });
+        await i.deferReply({ flags: 64 }); // ephemeral or DM reply
       }
-
+  
       const links = loadMap();
       const username = links[i.user.id];
       if (!username) {
-        await i.editReply('You are not linked yet. Run /link <roblox_username> first.');
+        await i.editReply(
+          'You are not linked yet. Run `/link <roblox_username>` first.'
+        );
         return;
       }
-
+  
       const robloxUserId = await robloxUserIdFromUsername(username);
       if (!robloxUserId) {
         await i.editReply(
@@ -373,11 +401,13 @@ client.on(Events.InteractionCreate, async (i) => {
         );
         return;
       }
-
+  
       const petId = Number(DEFAULT_PET_ID) || 5000000;
       const amount = Number(DEFAULT_AMOUNT) || 1;
-      const rarityOpt = normRarity(i.options.getString('rarity', false) || DEFAULT_RARITY);
-
+      const rarityOpt = normRarity(
+        i.options.getString('rarity', false) || DEFAULT_RARITY
+      );
+  
       try {
         await publishToRoblox(TOPIC, {
           type: 'discord_boost',
@@ -385,36 +415,44 @@ client.on(Events.InteractionCreate, async (i) => {
           robloxUsername: username,
           robloxUserId,
           reward: { kind: 'pet', id: petId, amount, rarity: rarityOpt },
-          reason: "Thanks for boosting the server! Your reward has been delivered.",
+          reason:
+            'Thanks for boosting the server! Your reward has been delivered.',
           ts: Date.now(),
         });
       } catch (e) {
-        console.warn('Publish failed; offline queue will still deliver:', e.message);
+        console.warn(
+          'Publish failed; offline queue will still deliver:',
+          e.message
+        );
       }
-
+  
       try {
         await enqueueViaOpenCloud(robloxUserId, {
           petId,
           amount,
           rarity: rarityOpt,
-          reason: "Thanks for boosting the server! Your reward has been delivered.",
+          reason:
+            'Thanks for boosting the server! Your reward has been delivered.',
           admin: false,
         });
       } catch (e) {
         console.error('Queue (DataStore) failed:', e);
       }
-
+  
       await i.editReply(
         `Claim queued ✅ (${rarityOpt}). If a server was online it’s instant; otherwise you’ll get it next time you join.`
       );
     } catch (e) {
       console.error('claimboost error:', e);
       try {
-        await i.editReply('Failed to process claim. Check bot console for details.');
+        await i.editReply(
+          'Failed to process claim. Check bot console for details.'
+        );
       } catch {}
     }
     return;
   }
+  
 
   // /grantpet
   if (i.commandName === 'grantpet') {
