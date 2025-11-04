@@ -1,4 +1,5 @@
 // index.js — Discord → Roblox Boost Reward Bot (Node 18+ / 22+)
+// Now with /resetdata (owner-only) that resets player data by Roblox username or linked Discord user.
 
 require('dotenv').config(); // load env FIRST
 
@@ -101,104 +102,10 @@ function normRarity(s) {
   return map[s] || 'normal';
 }
 
-// --- Slash Commands ---
-const rarityChoices = [
-  ['normal','normal'],
-  ['golden','golden'],
-  ['rainbow','rainbow'],
-  ['darkmatter','darkmatter'],
-  ['shiny','shiny'],
-  ['all','all'],
-];
-
-const commands = [
-  new SlashCommandBuilder()
-    .setName('link')
-    .setDescription('Link your Roblox username so boosts reward you in-game.')
-    .addStringOption((o) =>
-      o.setName('username').setDescription('Your Roblox username').setRequired(true)
-    )
-    .toJSON(),
-
-  new SlashCommandBuilder()
-    .setName('claimboost')
-    .setDescription('Manually claim the booster pet if you were already boosting.')
-    .addStringOption((o) => {
-      o.setName('rarity')
-       .setDescription('normal | golden | rainbow | darkmatter | shiny | all')
-       .setRequired(false);
-      rarityChoices.forEach(([name, value]) => o.addChoices({ name, value }));
-      return o;
-    })
-    .toJSON(),
-
-  new SlashCommandBuilder()
-    .setName('grantpet')
-    .setDescription('[OWNER] Grant a boost reward to anyone, anytime.')
-    .addUserOption((o) =>
-      o
-        .setName('discorduser')
-        .setDescription('Discord user to grant (uses their linked Roblox username if set).')
-        .setRequired(false)
-    )
-    .addStringOption((o) =>
-      o
-        .setName('roblox_username')
-        .setDescription('Roblox username to grant directly (if not using discorduser).')
-        .setRequired(false)
-    )
-    .addIntegerOption((o) =>
-      o
-        .setName('petid')
-        .setDescription('Override pet ID for this grant (default from env).')
-        .setRequired(false)
-    )
-    .addIntegerOption((o) =>
-      o
-        .setName('amount')
-        .setDescription('Amount to grant (default from env).')
-        .setRequired(false)
-    )
-    .addStringOption((o) => {
-      o
-        .setName('rarity')
-        .setDescription('normal | golden | rainbow | darkmatter | shiny | all')
-        .setRequired(false);
-      rarityChoices.forEach(([name, value]) => o.addChoices({ name, value }));
-      return o;
-    })
-    .addStringOption((o) =>
-      o
-        .setName('reason')
-        .setDescription('Optional reason/note for this grant.')
-        .setRequired(false)
-    )
-    .toJSON(),
-];
-
-const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-
-async function registerCommands(appId) {
-  // fast refresh for your server
-  await rest.put(
-    Routes.applicationGuildCommands(appId, GUILD_ID),
-    { body: commands },
-  );
-  console.log('Guild slash commands registered.');
-
-  // global so commands show in DM with the bot
-  await rest.put(
-    Routes.applicationCommands(appId),
-    { body: commands },
-  );
-  console.log('Global slash commands registered (for DMs).');
-}
-
-
-
 function isOwner(discordUserId) {
   return OWNER_SET.has(discordUserId);
 }
+
 async function isServerBooster(i) {
   const guild =
     client.guilds.cache.get(GUILD_ID) ||
@@ -214,8 +121,6 @@ async function isServerBooster(i) {
 
   return Boolean(member?.premiumSince);
 }
-
-
 
 async function robloxUserIdFromUsername(username) {
   const url = 'https://users.roblox.com/v1/usernames/users';
@@ -244,6 +149,7 @@ async function publishToRoblox(topic, payload) {
     universe: ROBLOX_UNIVERSE_ID,
     topic,
     robloxUserId: payload.robloxUserId,
+    action: payload.action,
     reward: payload.reward,
     ts: payload.ts,
     type: payload.type,
@@ -269,6 +175,7 @@ async function publishToRoblox(topic, payload) {
 }
 
 
+// ---------- Open Cloud: Standard DataStores (offline queue) ----------
 async function ocGetQueue(userId) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
   const u = `${base}?datastoreName=${encodeURIComponent(
@@ -350,6 +257,126 @@ async function enqueueViaOpenCloud(robloxUserId, item, retries = 3) {
   throw new Error('enqueueViaOpenCloud failed after retries');
 }
 
+
+// --- Slash Commands ---
+const rarityChoices = [
+  ['normal','normal'],
+  ['golden','golden'],
+  ['rainbow','rainbow'],
+  ['darkmatter','darkmatter'],
+  ['shiny','shiny'],
+  ['all','all'],
+];
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName('link')
+    .setDescription('Link your Roblox username so boosts reward you in-game.')
+    .addStringOption((o) =>
+      o.setName('username').setDescription('Your Roblox username').setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('claimboost')
+    .setDescription('Manually claim the booster pet if you were already boosting.')
+    .addStringOption((o) => {
+      o.setName('rarity')
+       .setDescription('normal | golden | rainbow | darkmatter | shiny | all')
+       .setRequired(false);
+      rarityChoices.forEach(([name, value]) => o.addChoices({ name, value }));
+      return o;
+    })
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('grantpet')
+    .setDescription('[OWNER] Grant a boost reward to anyone, anytime.')
+    .addUserOption((o) =>
+      o
+        .setName('discorduser')
+        .setDescription('Discord user to grant (uses their linked Roblox username if set).')
+        .setRequired(false)
+    )
+    .addStringOption((o) =>
+      o
+        .setName('roblox_username')
+        .setDescription('Roblox username to grant directly (if not using discorduser).')
+        .setRequired(false)
+    )
+    .addIntegerOption((o) =>
+      o
+        .setName('petid')
+        .setDescription('Override pet ID for this grant (default from env).')
+        .setRequired(false)
+    )
+    .addIntegerOption((o) =>
+      o
+        .setName('amount')
+        .setDescription('Amount to grant (default from env).')
+        .setRequired(false)
+    )
+    .addStringOption((o) => {
+      o
+        .setName('rarity')
+        .setDescription('normal | golden | rainbow | darkmatter | shiny | all')
+        .setRequired(false);
+      rarityChoices.forEach(([name, value]) => o.addChoices({ name, value }));
+      return o;
+    })
+    .addStringOption((o) =>
+      o
+        .setName('reason')
+        .setDescription('Optional reason/note for this grant.')
+        .setRequired(false)
+    )
+    .toJSON(),
+
+  // NEW: /resetdata — owner-only, by username or linked discord user
+  new SlashCommandBuilder()
+    .setName('resetdata')
+    .setDescription('[OWNER] Reset a player’s saved data (online OR offline).')
+    .addUserOption((o) =>
+      o
+        .setName('discorduser')
+        .setDescription('Discord user (uses their linked Roblox username if set).')
+        .setRequired(false)
+    )
+    .addStringOption((o) =>
+      o
+        .setName('roblox_username')
+        .setDescription('Roblox username to reset directly (if not using discorduser).')
+        .setRequired(false)
+    )
+    .addStringOption((o) =>
+      o
+        .setName('reason')
+        .setDescription('Optional reason for audit trail / in-game notice.')
+        .setRequired(false)
+    )
+    .toJSON(),
+];
+
+const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
+async function registerCommands(appId) {
+  // fast refresh for your server
+  await rest.put(
+    Routes.applicationGuildCommands(appId, GUILD_ID),
+    { body: commands },
+  );
+  console.log('Guild slash commands registered.');
+
+  // global so commands show in DM with the bot
+  await rest.put(
+    Routes.applicationCommands(appId),
+    { body: commands },
+  );
+  console.log('Global slash commands registered (for DMs).');
+}
+
+
+
 // --- Interaction handler ---
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand()) return;
@@ -380,11 +407,11 @@ client.on(Events.InteractionCreate, async (i) => {
         });
         return;
       }
-  
+
       if (!i.replied && !i.deferred) {
         await i.deferReply({ flags: 64 }); // ephemeral or DM reply
       }
-  
+
       const links = loadMap();
       const username = links[i.user.id];
       if (!username) {
@@ -393,7 +420,7 @@ client.on(Events.InteractionCreate, async (i) => {
         );
         return;
       }
-  
+
       const robloxUserId = await robloxUserIdFromUsername(username);
       if (!robloxUserId) {
         await i.editReply(
@@ -401,13 +428,13 @@ client.on(Events.InteractionCreate, async (i) => {
         );
         return;
       }
-  
+
       const petId = Number(DEFAULT_PET_ID) || 5000000;
       const amount = Number(DEFAULT_AMOUNT) || 1;
       const rarityOpt = normRarity(
         i.options.getString('rarity', false) || DEFAULT_RARITY
       );
-  
+
       try {
         await publishToRoblox(TOPIC, {
           type: 'discord_boost',
@@ -425,7 +452,7 @@ client.on(Events.InteractionCreate, async (i) => {
           e.message
         );
       }
-  
+
       try {
         await enqueueViaOpenCloud(robloxUserId, {
           petId,
@@ -438,7 +465,7 @@ client.on(Events.InteractionCreate, async (i) => {
       } catch (e) {
         console.error('Queue (DataStore) failed:', e);
       }
-  
+
       await i.editReply(
         `Claim queued ✅ (${rarityOpt}). If a server was online it’s instant; otherwise you’ll get it next time you join.`
       );
@@ -452,7 +479,7 @@ client.on(Events.InteractionCreate, async (i) => {
     }
     return;
   }
-  
+
 
   // /grantpet
   if (i.commandName === 'grantpet') {
@@ -460,15 +487,14 @@ client.on(Events.InteractionCreate, async (i) => {
     if (!i.replied && !i.deferred) {
       await i.deferReply({ flags: 64 }); // ephemeral
     }
-  
+
     // THEN: permission check
     if (!isOwner(i.user.id)) {
       await i.editReply('This command is owner-only.');
       return;
     }
-  
-    try {
 
+    try {
       const targetDiscordUser = i.options.getUser('discorduser', false);
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
       const petIdArg = i.options.getInteger('petid', false);
@@ -526,7 +552,6 @@ client.on(Events.InteractionCreate, async (i) => {
       } catch (e) {
         console.warn('Publish failed; offline queue will still deliver:', e.message);
       }
-      
 
       try {
         await enqueueViaOpenCloud(robloxUserId, {
@@ -562,9 +587,106 @@ client.on(Events.InteractionCreate, async (i) => {
     }
     return;
   }
+
+  // NEW: /resetdata
+  if (i.commandName === 'resetdata') {
+    if (!i.replied && !i.deferred) {
+      await i.deferReply({ flags: 64 });
+    }
+
+    // Owner-only
+    if (!isOwner(i.user.id)) {
+      await i.editReply('This command is owner-only.');
+      return;
+    }
+
+    try {
+      const targetDiscordUser = i.options.getUser('discorduser', false);
+      const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
+      const reason = i.options.getString('reason', false) || 'Admin requested reset';
+
+      let robloxUsername = null;
+      let robloxUserId = null;
+      let resolvedVia = null;
+
+      if (robloxUsernameArg) {
+        robloxUsername = robloxUsernameArg;
+        robloxUserId = await robloxUserIdFromUsername(robloxUsername);
+        resolvedVia = 'roblox_username';
+      } else if (targetDiscordUser) {
+        const links = loadMap();
+        const linked = links[targetDiscordUser.id];
+        if (!linked) {
+          await i.editReply(
+            `Selected Discord user <@${targetDiscordUser.id}> is not linked.\nEither have them run /link or pass roblox_username directly.`
+          );
+          return;
+        }
+        robloxUsername = linked;
+        robloxUserId = await robloxUserIdFromUsername(robloxUsername);
+        resolvedVia = 'discord_link';
+      } else {
+        await i.editReply('You must provide either roblox_username or discorduser.');
+        return;
+      }
+
+      if (!robloxUserId) {
+        await i.editReply(
+          `I couldn’t find Roblox user **${robloxUsername}**. Double-check the username or try again.`
+        );
+        return;
+      }
+
+      // Try instant via MessagingService
+      try {
+        await publishToRoblox(TOPIC, {
+          type: 'reset_data_admin',
+          action: 'reset_data',
+          performedBy: i.user.id,
+          targetDiscordId: targetDiscordUser?.id ?? null,
+          robloxUsername,
+          robloxUserId,
+          reason,
+          meta: { resolvedVia },
+          ts: Date.now(),
+        });
+      } catch (e) {
+        console.warn('Publish failed; offline queue will still deliver reset:', e.message);
+      }
+
+      // Always queue as a fallback for offline
+      try {
+        await enqueueViaOpenCloud(robloxUserId, {
+          action: 'reset_data',
+          reason,
+          admin: true,
+        });
+      } catch (e) {
+        console.error('Queue (DataStore) failed (reset):', e);
+      }
+
+      await i.editReply(
+        [
+          '🧹 **Reset queued**',
+          `• Roblox: **${robloxUsername}** (ID: ${robloxUserId})`,
+          targetDiscordUser ? `• Discord: <@${targetDiscordUser.id}>` : null,
+          `• Reason: ${reason}`,
+          `• Via: ${resolvedVia}`,
+          '• Delivery: instant if online; otherwise on next join',
+        ]
+        .filter(Boolean)
+        .join('\n')
+      );
+    } catch (e) {
+      console.error('resetdata error:', e);
+      try {
+        await i.editReply('Failed to process reset. Check bot console for details.');
+      } catch {}
+    }
+    return;
+  }
 });
 
-// --- Booster start/stop detector ---
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   try {
     if (newMember.guild.id !== GUILD_ID) return;
