@@ -1,6 +1,6 @@
 // index.js — Discord → Roblox Boost Reward Bot
-// Commands: /link /claimboost /grantpet /resetdata
-// Pet name support + webhook logging + passes discordId/discordTag in queue items
+// Keeps: /link /claimboost /grantpet /resetdata
+// Fixed: name-vs-id precedence (name wins), pet always grants, webhook context preserved.
 
 require('dotenv').config();
 
@@ -30,7 +30,7 @@ const {
   DEFAULT_RARITY = 'normal',
   DATA_DIR = './data',
   DS_NAME = 'DiscordBoostQueue_v1',
-  WEBHOOK_URL = 'https://discord.com/api/webhooks/1437429543198658570/0Mc4FQANdhh2W6MuGT5Rph7gxbeDV6QLw0jecp-n2SwSwgGdqi9j1HD5BkGm1tW5zLNm', // optional (Node-side logging)
+  WEBHOOK_URL = '', // optional: Node-side webhook (Roblox already sends one with icon)
 } = process.env;
 
 if (!DISCORD_TOKEN || !GUILD_ID || !ROBLOX_UNIVERSE_ID || !ROBLOX_API_KEY) {
@@ -50,6 +50,7 @@ const client = new Client({
   partials: [Partials.GuildMember, Partials.Channel],
 });
 
+// ---------- helpers
 function normRarity(s) {
   if (!s) return 'normal';
   s = String(s).toLowerCase();
@@ -120,6 +121,7 @@ async function enqueueViaOpenCloud(robloxUserId, item, retries = 3) {
   throw new Error('enqueueViaOpenCloud failed after retries');
 }
 
+// ---------- slash commands
 const rarityChoices = [
   ['normal','normal'], ['golden','golden'], ['rainbow','rainbow'],
   ['darkmatter','darkmatter'], ['shiny','shiny'], ['all','all'],
@@ -131,13 +133,16 @@ const commands = [
     .setDescription('Link your Roblox username so boosts reward you in-game.')
     .addStringOption(o => o.setName('username').setDescription('Your Roblox username').setRequired(true))
     .toJSON(),
+
   new SlashCommandBuilder()
     .setName('claimboost')
     .setDescription('Manually claim the booster pet if you were already boosting.')
     .addStringOption(o => {
       o.setName('rarity').setDescription('normal | golden | rainbow | darkmatter | shiny | all').setRequired(false);
       rarityChoices.forEach(([n, v]) => o.addChoices({ name: n, value: v })); return o;
-    }).toJSON(),
+    })
+    .toJSON(),
+
   new SlashCommandBuilder()
     .setName('grantpet')
     .setDescription('[OWNER] Grant a boost reward to anyone, anytime.')
@@ -152,6 +157,7 @@ const commands = [
     })
     .addStringOption(o => o.setName('reason').setDescription('Optional reason').setRequired(false))
     .toJSON(),
+
   new SlashCommandBuilder()
     .setName('resetdata')
     .setDescription('[OWNER] Reset a player’s saved data (online OR offline).')
@@ -167,6 +173,7 @@ async function registerCommands(appId) {
   await rest.put(Routes.applicationCommands(appId), { body: commands });
 }
 
+// ---------- interactions
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand()) return;
 
@@ -184,6 +191,7 @@ client.on(Events.InteractionCreate, async (i) => {
         return;
       }
       if (!i.replied && !i.deferred) await i.deferReply({ flags: 64 });
+
       const links = loadMap();
       const username = links[i.user.id];
       if (!username) { await i.editReply('You are not linked yet. Run `/link <roblox_username>` first.'); return; }
@@ -195,25 +203,21 @@ client.on(Events.InteractionCreate, async (i) => {
       const rarityOpt = normRarity(i.options.getString('rarity', false) || DEFAULT_RARITY);
       const reasonText = 'Thanks for boosting the server! Your reward has been delivered.';
 
-      try {
-        await publishToRoblox(TOPIC, {
-          type: 'discord_boost',
-          discordId: i.user.id,
-          robloxUsername: username,
-          robloxUserId,
-          reward: { kind: 'pet', id: petId, amount, rarity: rarityOpt },
-          reason: reasonText,
-          discordTag: i.user.username,
-          ts: Date.now(),
-        });
-      } catch {}
+      await publishToRoblox(TOPIC, {
+        type: 'discord_boost',
+        discordId: i.user.id,
+        discordTag: i.user.username,
+        robloxUsername: username,
+        robloxUserId,
+        reward: { kind: 'pet', id: petId, amount, rarity: rarityOpt },
+        reason: reasonText,
+        ts: Date.now(),
+      });
 
-      try {
-        await enqueueViaOpenCloud(robloxUserId, {
-          petId, amount, rarity: rarityOpt, reason: reasonText, admin: false,
-          discordId: i.user.id, discordTag: i.user.username
-        });
-      } catch {}
+      await enqueueViaOpenCloud(robloxUserId, {
+        petId, amount, rarity: rarityOpt, reason: reasonText, admin: false,
+        discordId: i.user.id, discordTag: i.user.username
+      });
 
       await i.editReply(`Claim queued ✅ (${rarityOpt}).`);
     } catch (e) {
@@ -230,16 +234,14 @@ client.on(Events.InteractionCreate, async (i) => {
       const targetDiscordUser = i.options.getUser('discorduser', false);
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
       const petIdArg = i.options.getInteger('petid', false);
-      const petNameArg = i.options.getString('petname', false);
+      const petNameArg = i.options.getString('petname', false)?.trim();
       const amountArg = i.options.getInteger('amount', false);
       const rarityArg = normRarity(i.options.getString('rarity', false) || DEFAULT_RARITY);
       const reason = i.options.getString('reason', false) || 'You’ve received a special admin reward!';
 
-      const petId = Number(petIdArg ?? DEFAULT_PET_ID) || 5000000;
       const amount = Number(amountArg ?? DEFAULT_AMOUNT) || 1;
 
       let robloxUsername = null, robloxUserId = null, resolvedVia = null;
-
       if (robloxUsernameArg) {
         robloxUsername = robloxUsernameArg;
         robloxUserId = await robloxUserIdFromUsername(robloxUsername);
@@ -255,33 +257,36 @@ client.on(Events.InteractionCreate, async (i) => {
 
       if (!robloxUserId) { await i.editReply(`I couldn’t find Roblox user **${robloxUsername}**.`); return; }
 
-      try {
-        await publishToRoblox(TOPIC, {
-          type: 'discord_boost_admin',
-          performedBy: i.user.id,
-          targetDiscordId: targetDiscordUser?.id ?? null,
-          robloxUsername, robloxUserId,
-          reward: { kind: 'pet', id: petId, name: petNameArg || null, amount, rarity: rarityArg },
-          reason,
-          meta: { resolvedVia },
-          discordTag: i.user.username,
-          ts: Date.now(),
-        });
-      } catch {}
+      // Mutual exclusion: if petname provided, it overrides petid completely.
+      const payloadReward = petNameArg
+        ? { kind: 'pet', name: petNameArg, amount, rarity: rarityArg }
+        : { kind: 'pet', id: Number(petIdArg ?? DEFAULT_PET_ID) || 5000000, amount, rarity: rarityArg };
 
-      try {
-        await enqueueViaOpenCloud(robloxUserId, {
-          petId, petName: petNameArg || null, amount, rarity: rarityArg, reason, admin: true,
-          discordId: i.user.id, discordTag: i.user.username
-        });
-      } catch {}
+      await publishToRoblox(TOPIC, {
+        type: 'discord_boost_admin',
+        performedBy: i.user.id,
+        discordTag: i.user.username,
+        targetDiscordId: targetDiscordUser?.id ?? null,
+        robloxUsername, robloxUserId,
+        reward: payloadReward,
+        reason,
+        meta: { resolvedVia },
+        ts: Date.now(),
+      });
+
+      await enqueueViaOpenCloud(robloxUserId, {
+        petId: payloadReward.id ?? (payloadReward.name || null),
+        petName: payloadReward.name || null,
+        amount, rarity: rarityArg, reason, admin: true,
+        discordId: i.user.id, discordTag: i.user.username
+      });
 
       await i.editReply(
         [
           '✅ **Grant queued**',
           `• Roblox: **${robloxUsername}** (ID: ${robloxUserId})`,
           targetDiscordUser ? `• Discord: <@${targetDiscordUser.id}>` : null,
-          `• Reward: ${petNameArg ? petNameArg : `Pet ${petId}`} × ${amount}`,
+          `• Reward: ${petNameArg ? petNameArg : `Pet ${payloadReward.id}`} × ${amount}`,
           `• Rarity: ${rarityArg}`,
           reason ? `• Reason: ${reason}` : null,
           `• Via: ${resolvedVia}`,
@@ -304,7 +309,6 @@ client.on(Events.InteractionCreate, async (i) => {
       const reason = i.options.getString('reason', false) || 'Admin requested reset';
 
       let robloxUsername = null, robloxUserId = null, resolvedVia = null;
-
       if (robloxUsernameArg) {
         robloxUsername = robloxUsernameArg;
         robloxUserId = await robloxUserIdFromUsername(robloxUsername);
@@ -320,25 +324,21 @@ client.on(Events.InteractionCreate, async (i) => {
 
       if (!robloxUserId) { await i.editReply(`I couldn’t find Roblox user **${robloxUsername}**.`); return; }
 
-      try {
-        await publishToRoblox(TOPIC, {
-          type: 'reset_data_admin',
-          action: 'reset_data',
-          performedBy: i.user.id,
-          targetDiscordId: targetDiscordUser?.id ?? null,
-          robloxUsername, robloxUserId, reason,
-          meta: { resolvedVia },
-          discordTag: i.user.username,
-          ts: Date.now(),
-        });
-      } catch {}
+      await publishToRoblox(TOPIC, {
+        type: 'reset_data_admin',
+        action: 'reset_data',
+        performedBy: i.user.id,
+        discordTag: i.user.username,
+        targetDiscordId: targetDiscordUser?.id ?? null,
+        robloxUsername, robloxUserId, reason,
+        meta: { resolvedVia },
+        ts: Date.now(),
+      });
 
-      try {
-        await enqueueViaOpenCloud(robloxUserId, {
-          action: 'reset_data', reason, admin: true,
-          discordId: i.user.id, discordTag: i.user.username
-        });
-      } catch {}
+      await enqueueViaOpenCloud(robloxUserId, {
+        action: 'reset_data', reason, admin: true,
+        discordId: i.user.id, discordTag: i.user.username
+      });
 
       await i.editReply(
         [
@@ -357,6 +357,7 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 });
 
+// auto-boost flow unchanged (still passes discordId/discordTag)
 client.on(Events.GuildMemberUpdate, async (oldM, newM) => {
   try {
     if (newM.guild.id !== GUILD_ID) return;
@@ -374,25 +375,21 @@ client.on(Events.GuildMemberUpdate, async (oldM, newM) => {
       const rarity = normRarity(DEFAULT_RARITY);
       const reasonText = 'Thanks for boosting the server! Your reward has been delivered.';
 
-      try {
-        await publishToRoblox(TOPIC, {
-          type: 'discord_boost',
-          discordId,
-          robloxUsername: username,
-          robloxUserId,
-          reward: { kind: 'pet', id: petId, amount, rarity },
-          reason: reasonText,
-          discordTag: newM.user?.username,
-          ts: Date.now(),
-        });
-      } catch {}
+      await publishToRoblox(TOPIC, {
+        type: 'discord_boost',
+        discordId,
+        discordTag: newM.user?.username,
+        robloxUsername: username,
+        robloxUserId,
+        reward: { kind: 'pet', id: petId, amount, rarity },
+        reason: reasonText,
+        ts: Date.now(),
+      });
 
-      try {
-        await enqueueViaOpenCloud(robloxUserId, {
-          petId, amount, rarity, reason: reasonText, admin: false,
-          discordId, discordTag: newM.user?.username
-        });
-      } catch {}
+      await enqueueViaOpenCloud(robloxUserId, {
+        petId, amount, rarity, reason: reasonText, admin: false,
+        discordId, discordTag: newM.user?.username
+      });
 
       await newM.send(`✨ Thanks for boosting! Your reward (Pet ID **${petId}**, rarity **${rarity}**) is queued.`).catch(() => {});
     }
