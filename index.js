@@ -1,6 +1,6 @@
-// index.js — Discord → Roblox Boost Reward Bot (Node 18+ / 22+)
-// Commands: /link, /claimboost, /grantpet, /resetdata
-// Features: pet name support, webhook logging w/ thumbnails via pets.json
+// index.js — Discord → Roblox Boost Reward Bot
+// Commands: /link /claimboost /grantpet /resetdata
+// Pet name support + webhook logging + passes discordId/discordTag in queue items
 
 require('dotenv').config();
 
@@ -8,24 +8,16 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  Events,
-  REST,
-  Routes,
-  SlashCommandBuilder,
+  Client, GatewayIntentBits, Partials, Events, REST, Routes, SlashCommandBuilder,
 } = require('discord.js');
 
 const fetch = (...args) => import('node-fetch').then(mod => mod.default(...args));
 
-// --- Keepalive HTTP server (Render/host ping) ---
 const keepAliveApp = express();
-keepAliveApp.get('/', (req, res) => res.send('BoostRewardBot alive'));
+keepAliveApp.get('/', (_, res) => res.send('BoostRewardBot alive'));
 const PORT = process.env.PORT || 3000;
 keepAliveApp.listen(PORT, () => console.log('Keep-alive web server running on port', PORT));
 
-// --- Env ---
 const {
   DISCORD_TOKEN,
   GUILD_ID,
@@ -35,42 +27,29 @@ const {
   OWNER_IDS = '',
   DEFAULT_PET_ID = '5000000',
   DEFAULT_AMOUNT = '1',
-  DEFAULT_RARITY = 'normal', // normal|golden|rainbow|darkmatter|shiny|all
+  DEFAULT_RARITY = 'normal',
   DATA_DIR = './data',
   DS_NAME = 'DiscordBoostQueue_v1',
-  WEBHOOK_URL = 'https://discord.com/api/webhooks/1437429543198658570/0Mc4FQANdhh2W6MuGT5Rph7gxbeDV6QLw0jecp-n2SwSwgGdqi9j1HD5BkGm1tW5zLNm', // set in .env if you prefer
+  WEBHOOK_URL = 'https://discord.com/api/webhooks/1437429543198658570/0Mc4FQANdhh2W6MuGT5Rph7gxbeDV6QLw0jecp-n2SwSwgGdqi9j1HD5BkGm1tW5zLNm', // optional (Node-side logging)
 } = process.env;
 
 if (!DISCORD_TOKEN || !GUILD_ID || !ROBLOX_UNIVERSE_ID || !ROBLOX_API_KEY) {
-  console.error('Missing required env vars. Check .env (DISCORD_TOKEN, GUILD_ID, ROBLOX_UNIVERSE_ID, ROBLOX_API_KEY).');
+  console.error('Missing required env vars.');
   process.exit(1);
 }
 
-console.log('BoostRewardBot loaded with topic:', TOPIC, 'Universe:', ROBLOX_UNIVERSE_ID);
-
 const OWNER_SET = new Set(OWNER_IDS.split(',').map(s => s.trim()).filter(Boolean));
 
-// --- Data files ---
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const MAP_FILE = path.join(DATA_DIR, 'links.json');          // DiscordID -> RobloxUsername
-const PETS_FILE = path.join(DATA_DIR, 'pets.json');          // Pet ID/Name -> { name, thumbAssetId | thumbnail, goldenThumbnail, id }
-
-function loadMap() {
-  try { return JSON.parse(fs.readFileSync(MAP_FILE, 'utf8')); } catch { return {}; }
-}
-function saveMap(m) {
-  fs.writeFileSync(MAP_FILE, JSON.stringify(m, null, 2));
-}
-function loadPetsMap() {
-  try { return JSON.parse(fs.readFileSync(PETS_FILE, 'utf8')); } catch { return {}; }
-}
+const MAP_FILE = path.join(DATA_DIR, 'links.json');
+function loadMap() { try { return JSON.parse(fs.readFileSync(MAP_FILE, 'utf8')); } catch { return {}; } }
+function saveMap(m) { fs.writeFileSync(MAP_FILE, JSON.stringify(m, null, 2)); }
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages],
   partials: [Partials.GuildMember, Partials.Channel],
 });
 
-// --- Helpers ---
 function normRarity(s) {
   if (!s) return 'normal';
   s = String(s).toLowerCase();
@@ -79,309 +58,106 @@ function normRarity(s) {
     gold: 'golden', golden: 'golden',
     rb: 'rainbow', rainbow: 'rainbow',
     dm: 'darkmatter', dark: 'darkmatter', darkmatter: 'darkmatter',
-    shiny: 'shiny',
-    all: 'all',
+    shiny: 'shiny', all: 'all',
   };
   return map[s] || 'normal';
 }
-function isOwner(discordUserId) {
-  return OWNER_SET.has(discordUserId);
-}
+function isOwner(id) { return OWNER_SET.has(id); }
 async function isServerBooster(i) {
-  const guild = client.guilds.cache.get(GUILD_ID) || (await client.guilds.fetch(GUILD_ID).catch(() => null));
-  if (!guild) return false;
-  try {
-    const member = await guild.members.fetch(i.user.id);
-    return Boolean(member?.premiumSince);
-  } catch {
-    return false;
-  }
+  const g = client.guilds.cache.get(GUILD_ID) || (await client.guilds.fetch(GUILD_ID).catch(() => null));
+  if (!g) return false;
+  try { const m = await g.members.fetch(i.user.id); return Boolean(m?.premiumSince); } catch { return false; }
 }
 async function robloxUserIdFromUsername(username) {
   const url = 'https://users.roblox.com/v1/usernames/users';
   const body = { usernames: [username], excludeBannedUsers: false };
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) {
-    console.error('Roblox username lookup failed:', res.status, await res.text());
-    return null;
-  }
+  if (!res.ok) return null;
   const data = await res.json();
   return data?.data?.[0]?.id ?? null;
 }
 
-/**
- * Resolve display name and thumbnail assetId for a pet using ./data/pets.json
- * Supports lookup by numeric ID (string key) and by lowercased pet name.
- * If rarity === 'golden', prefers 'goldenThumbnail' field.
- */
-function resolvePetDisplay({ petId, petName, rarity }) {
-  const map = loadPetsMap();
-  let resolved = {
-    displayName: null,
-    thumbAssetId: null,
-    resolvedPetId: petId ?? null,
-  };
-
-  // Prefer ID mapping first
-  if (petId != null) {
-    const idKey = String(petId);
-    const entry = map[idKey];
-    if (entry) {
-      resolved.displayName = entry.name || resolved.displayName;
-      // choose thumbnail based on rarity flag like Eggs module
-      resolved.thumbAssetId =
-        (rarity === 'golden' && (entry.goldenThumbnail || entry.thumbAssetId)) ||
-        entry.thumbnail || entry.thumbAssetId || resolved.thumbAssetId;
-    }
-  }
-
-  // Then try by name (case-insensitive)
-  if (!resolved.displayName && petName) {
-    const nameKey = String(petName).toLowerCase();
-    const entry = map[nameKey];
-    if (entry) {
-      resolved.displayName = entry.name || petName;
-      if (entry.id != null && resolved.resolvedPetId == null) resolved.resolvedPetId = entry.id;
-      resolved.thumbAssetId =
-        (rarity === 'golden' && (entry.goldenThumbnail || entry.thumbAssetId)) ||
-        entry.thumbnail || entry.thumbAssetId || resolved.thumbAssetId;
-    } else {
-      resolved.displayName = petName;
-    }
-  }
-
-  if (!resolved.displayName) {
-    resolved.displayName = resolved.resolvedPetId != null ? `Pet #${resolved.resolvedPetId}` : (petName || 'Pet');
-  }
-
-  return resolved;
-}
-
-// --- Roblox thumbnail URL helper (same service your Eggs module calls)
-async function imageIdToUrl(assetId) {
-  if (!assetId) return null;
-  const clean = String(assetId).replace('rbxassetid://', '');
-  const res = await fetch(`https://thumbnails.roproxy.com/v1/assets?assetIds=${clean}&size=512x512&format=Png&isCircular=false`);
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data?.data?.[0]?.imageUrl ?? null;
-}
-
-// ---------- Open Cloud: MessagingService (instant) ----------
 async function publishToRoblox(topic, payload) {
   const url = `https://apis.roblox.com/messaging-service/v1/universes/${ROBLOX_UNIVERSE_ID}/topics/${encodeURIComponent(topic)}`;
-
-  console.log('Publishing to Roblox:', {
-    universe: ROBLOX_UNIVERSE_ID,
-    topic,
-    robloxUserId: payload.robloxUserId,
-    action: payload.action,
-    reward: payload.reward,
-    ts: payload.ts,
-    type: payload.type,
-    performedBy: payload.performedBy,
-  });
-
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'x-api-key': ROBLOX_API_KEY,
-      'Content-Type': 'application/json',
-    },
+    headers: { 'x-api-key': ROBLOX_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({ message: JSON.stringify(payload) }),
   });
-
-  if (!res.ok) {
-    const txt = await res.text();
-    console.error('Open Cloud publish failed:', res.status, txt);
-    throw new Error(`OpenCloud ${res.status}`);
-  }
-
-  console.log('Publish OK');
+  if (!res.ok) throw new Error(`OpenCloud ${res.status}`);
 }
 
-// ---------- Open Cloud: Standard DataStores (offline queue) ----------
 async function ocGetQueue(userId) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
   const u = `${base}?datastoreName=${encodeURIComponent(DS_NAME)}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;
-
   const res = await fetch(u, { headers: { 'x-api-key': ROBLOX_API_KEY } });
   if (res.status === 404) return { body: { items: [] }, etag: null };
-  if (!res.ok) throw new Error(`OC Get DS failed ${res.status}: ${await res.text()}`);
-
   const etag = res.headers.get('etag');
   let body = {};
   try { body = await res.json(); } catch {}
   if (!body || typeof body !== 'object' || !Array.isArray(body.items)) body = { items: [] };
-
   return { body, etag };
 }
 async function ocPutQueue(userId, body, etag) {
   const base = `https://apis.roblox.com/datastores/v1/universes/${ROBLOX_UNIVERSE_ID}/standard-datastores/datastore/entries/entry`;
   const u = `${base}?datastoreName=${encodeURIComponent(DS_NAME)}&scope=global&entryKey=${encodeURIComponent(String(userId))}`;
-
   const headers = { 'x-api-key': ROBLOX_API_KEY, 'Content-Type': 'application/json' };
   if (etag) headers['If-Match'] = etag;
-
   const res = await fetch(u, { method: 'PUT', headers, body: JSON.stringify(body) });
   if (res.status === 409 || res.status === 412) return false;
-  if (!res.ok) throw new Error(`OC Put DS failed ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`OC Put DS failed ${res.status}`);
   return true;
 }
 async function enqueueViaOpenCloud(robloxUserId, item, retries = 3) {
-  for (let attempt = 0; attempt < retries; attempt++) {
+  for (let a = 0; a < retries; a++) {
     const { body, etag } = await ocGetQueue(robloxUserId);
     body.items = Array.isArray(body.items) ? body.items : [];
     body.items.push(item);
     const ok = await ocPutQueue(robloxUserId, body, etag);
-    if (ok) {
-      console.log('Queued via DataStore for', robloxUserId, item);
-      return true;
-    }
-    await new Promise((r) => setTimeout(r, 200 + 150 * attempt));
+    if (ok) return true;
+    await new Promise(r => setTimeout(r, 200 + 150 * a));
   }
   throw new Error('enqueueViaOpenCloud failed after retries');
 }
 
-// --- Webhook Logging with thumbnails ---
-async function sendPetWebhook(source, info) {
-  if (!WEBHOOK_URL) return; // skip if not configured
-  try {
-    const {
-      robloxUsername,
-      robloxUserId,
-      discordUser,
-      discordId,
-      petId,
-      petName,
-      rarity,
-      amount,
-    } = info;
-
-    // Resolve display/thumbnail similar to Eggs module behavior
-    const resolved = resolvePetDisplay({ petId, petName, rarity });
-    const displayName = resolved.displayName;
-    const thumbAssetId = resolved.thumbAssetId;
-
-    // color palette similar to your hatch embeds
-    const colorMap = {
-      normal: 0x7289DA,
-      golden: 0xFFD700,
-      rainbow: 0x00FFFF,
-      darkmatter: 0x8000FF,
-      shiny: 0xFFFFFF,
-      all: 0x00FF7F,
-    };
-    const color = colorMap[rarity] || 0x7289DA;
-
-    const thumbUrl = thumbAssetId ? await imageIdToUrl(thumbAssetId) : null;
-
-    const lines = [];
-    if (source) lines.push(`**Source:** ${source}`);
-    lines.push(`**Rarity:** ${rarity}`);
-    lines.push(`**Amount:** ${amount}`);
-    if (petId != null) lines.push(`**Pet ID:** ${petId}`);
-    if (petName) lines.push(`**Pet Name:** ${petName}`);
-    lines.push(`**Roblox:** ${robloxUsername} (ID: ${robloxUserId})`);
-    if (discordId) lines.push(`**Discord:** <@${discordId}> (${discordUser || discordId})`);
-
-    const embed = {
-      title: `🎁 Pet Granted: ${displayName}`,
-      description: lines.join('\n'),
-      color,
-      thumbnail: thumbUrl ? { url: thumbUrl } : undefined,
-      timestamp: new Date().toISOString(),
-    };
-
-    await fetch(WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'Boost Reward Bot',
-        avatar_url: thumbUrl || undefined,
-        embeds: [embed],
-      }),
-    });
-  } catch (e) {
-    console.error('Webhook send failed:', e);
-  }
-}
-
-// --- Slash Commands ---
 const rarityChoices = [
-  ['normal','normal'],
-  ['golden','golden'],
-  ['rainbow','rainbow'],
-  ['darkmatter','darkmatter'],
-  ['shiny','shiny'],
-  ['all','all'],
+  ['normal','normal'], ['golden','golden'], ['rainbow','rainbow'],
+  ['darkmatter','darkmatter'], ['shiny','shiny'], ['all','all'],
 ];
 
 const commands = [
-  // /link
   new SlashCommandBuilder()
     .setName('link')
     .setDescription('Link your Roblox username so boosts reward you in-game.')
-    .addStringOption(o =>
-      o.setName('username').setDescription('Your Roblox username').setRequired(true)
-    )
+    .addStringOption(o => o.setName('username').setDescription('Your Roblox username').setRequired(true))
     .toJSON(),
-
-  // /claimboost
   new SlashCommandBuilder()
     .setName('claimboost')
     .setDescription('Manually claim the booster pet if you were already boosting.')
-    .addStringOption((o) => {
-      o.setName('rarity')
-       .setDescription('normal | golden | rainbow | darkmatter | shiny | all')
-       .setRequired(false);
-      rarityChoices.forEach(([name, value]) => o.addChoices({ name, value }));
-      return o;
-    })
-    .toJSON(),
-
-  // /grantpet
+    .addStringOption(o => {
+      o.setName('rarity').setDescription('normal | golden | rainbow | darkmatter | shiny | all').setRequired(false);
+      rarityChoices.forEach(([n, v]) => o.addChoices({ name: n, value: v })); return o;
+    }).toJSON(),
   new SlashCommandBuilder()
     .setName('grantpet')
     .setDescription('[OWNER] Grant a boost reward to anyone, anytime.')
-    .addUserOption(o =>
-      o.setName('discorduser').setDescription('Discord user to grant (uses their linked Roblox username if set).').setRequired(false)
-    )
-    .addStringOption(o =>
-      o.setName('roblox_username').setDescription('Roblox username to grant directly (if not using discorduser).').setRequired(false)
-    )
-    .addIntegerOption(o =>
-      o.setName('petid').setDescription('Override pet ID for this grant (default from env).').setRequired(false)
-    )
-    .addStringOption(o =>
-      o.setName('petname').setDescription('Pet name (alternative to ID). Example: Huge Cat').setRequired(false)
-    )
-    .addIntegerOption(o =>
-      o.setName('amount').setDescription('Amount to grant (default from env).').setRequired(false)
-    )
-    .addStringOption((o) => {
+    .addUserOption(o => o.setName('discorduser').setDescription('Discord user to grant').setRequired(false))
+    .addStringOption(o => o.setName('roblox_username').setDescription('Roblox username').setRequired(false))
+    .addIntegerOption(o => o.setName('petid').setDescription('Pet ID').setRequired(false))
+    .addStringOption(o => o.setName('petname').setDescription('Pet name (alternative to ID)').setRequired(false))
+    .addIntegerOption(o => o.setName('amount').setDescription('Amount').setRequired(false))
+    .addStringOption(o => {
       o.setName('rarity').setDescription('normal | golden | rainbow | darkmatter | shiny | all').setRequired(false);
-      rarityChoices.forEach(([name, value]) => o.addChoices({ name, value }));
-      return o;
+      rarityChoices.forEach(([n, v]) => o.addChoices({ name: n, value: v })); return o;
     })
-    .addStringOption(o =>
-      o.setName('reason').setDescription('Optional reason/note for this grant.').setRequired(false)
-    )
+    .addStringOption(o => o.setName('reason').setDescription('Optional reason').setRequired(false))
     .toJSON(),
-
-  // /resetdata
   new SlashCommandBuilder()
     .setName('resetdata')
     .setDescription('[OWNER] Reset a player’s saved data (online OR offline).')
-    .addUserOption(o =>
-      o.setName('discorduser').setDescription('Discord user (uses their linked Roblox username if set).').setRequired(false)
-    )
-    .addStringOption(o =>
-      o.setName('roblox_username').setDescription('Roblox username to reset directly (if not using discorduser).').setRequired(false)
-    )
-    .addStringOption(o =>
-      o.setName('reason').setDescription('Optional reason for audit trail / in-game notice.').setRequired(false)
-    )
+    .addUserOption(o => o.setName('discorduser').setDescription('Discord user').setRequired(false))
+    .addStringOption(o => o.setName('roblox_username').setDescription('Roblox username').setRequired(false))
+    .addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(false))
     .toJSON(),
 ];
 
@@ -389,50 +165,30 @@ const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 async function registerCommands(appId) {
   await rest.put(Routes.applicationGuildCommands(appId, GUILD_ID), { body: commands });
   await rest.put(Routes.applicationCommands(appId), { body: commands });
-  console.log('Slash commands registered.');
 }
 
-// --- Interactions ---
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand()) return;
 
-  // /link
   if (i.commandName === 'link') {
     const username = i.options.getString('username', true).trim();
-    const links = loadMap();
-    links[i.user.id] = username;
-    saveMap(links);
+    const links = loadMap(); links[i.user.id] = username; saveMap(links);
     await i.reply({ content: `Linked ✅ **${username}**.`, flags: 64 });
     return;
   }
 
-  // /claimboost
   if (i.commandName === 'claimboost') {
     try {
       if (!(await isServerBooster(i))) {
-        await i.reply({
-          content:
-            'This command is only for **current server boosters** of our main server. ' +
-            'Boost the server first, then run /claimboost.',
-          flags: 64,
-        });
+        await i.reply({ content: 'This command is only for current server boosters.', flags: 64 });
         return;
       }
-
       if (!i.replied && !i.deferred) await i.deferReply({ flags: 64 });
-
       const links = loadMap();
       const username = links[i.user.id];
-      if (!username) {
-        await i.editReply('You are not linked yet. Run `/link <roblox_username>` first.');
-        return;
-      }
-
+      if (!username) { await i.editReply('You are not linked yet. Run `/link <roblox_username>` first.'); return; }
       const robloxUserId = await robloxUserIdFromUsername(username);
-      if (!robloxUserId) {
-        await i.editReply(`I couldn’t find Roblox user **${username}**. Re-run /link with the correct name.`);
-        return;
-      }
+      if (!robloxUserId) { await i.editReply(`I couldn’t find Roblox user **${username}**.`); return; }
 
       const petId = Number(DEFAULT_PET_ID) || 5000000;
       const amount = Number(DEFAULT_AMOUNT) || 1;
@@ -447,50 +203,28 @@ client.on(Events.InteractionCreate, async (i) => {
           robloxUserId,
           reward: { kind: 'pet', id: petId, amount, rarity: rarityOpt },
           reason: reasonText,
+          discordTag: i.user.username,
           ts: Date.now(),
         });
-      } catch (e) {
-        console.warn('Publish failed; offline queue will still deliver:', e.message);
-      }
+      } catch {}
 
       try {
         await enqueueViaOpenCloud(robloxUserId, {
-          petId,
-          amount,
-          rarity: rarityOpt,
-          reason: reasonText,
-          admin: false,
+          petId, amount, rarity: rarityOpt, reason: reasonText, admin: false,
+          discordId: i.user.id, discordTag: i.user.username
         });
-      } catch (e) {
-        console.error('Queue (DataStore) failed:', e);
-      }
+      } catch {}
 
-      await sendPetWebhook('claimboost', {
-        robloxUsername: username,
-        robloxUserId,
-        discordUser: i.user.username,
-        discordId: i.user.id,
-        petId,
-        petName: null,
-        rarity: rarityOpt,
-        amount,
-      });
-
-      await i.editReply(`Claim queued ✅ (${rarityOpt}). If a server was online it’s instant; otherwise you’ll get it next time you join.`);
+      await i.editReply(`Claim queued ✅ (${rarityOpt}).`);
     } catch (e) {
-      console.error('claimboost error:', e);
-      try { await i.editReply('Failed to process claim. Check bot console for details.'); } catch {}
+      try { await i.editReply('Failed to process claim.'); } catch {}
     }
     return;
   }
 
-  // /grantpet
   if (i.commandName === 'grantpet') {
     if (!i.replied && !i.deferred) await i.deferReply({ flags: 64 });
-    if (!isOwner(i.user.id)) {
-      await i.editReply('This command is owner-only.');
-      return;
-    }
+    if (!isOwner(i.user.id)) { await i.editReply('This command is owner-only.'); return; }
 
     try {
       const targetDiscordUser = i.options.getUser('discorduser', false);
@@ -504,9 +238,7 @@ client.on(Events.InteractionCreate, async (i) => {
       const petId = Number(petIdArg ?? DEFAULT_PET_ID) || 5000000;
       const amount = Number(amountArg ?? DEFAULT_AMOUNT) || 1;
 
-      let robloxUsername = null;
-      let robloxUserId = null;
-      let resolvedVia = null;
+      let robloxUsername = null, robloxUserId = null, resolvedVia = null;
 
       if (robloxUsernameArg) {
         robloxUsername = robloxUsernameArg;
@@ -515,74 +247,41 @@ client.on(Events.InteractionCreate, async (i) => {
       } else if (targetDiscordUser) {
         const links = loadMap();
         const linked = links[targetDiscordUser.id];
-        if (!linked) {
-          await i.editReply(
-            `Selected Discord user <@${targetDiscordUser.id}> is not linked.\nEither have them run /link or pass roblox_username directly.`
-          );
-          return;
-        }
+        if (!linked) { await i.editReply(`Selected Discord user <@${targetDiscordUser.id}> is not linked.`); return; }
         robloxUsername = linked;
         robloxUserId = await robloxUserIdFromUsername(robloxUsername);
         resolvedVia = 'discord_link';
-      } else {
-        await i.editReply('You must provide either roblox_username or discorduser.');
-        return;
-      }
+      } else { await i.editReply('You must provide either roblox_username or discorduser.'); return; }
 
-      if (!robloxUserId) {
-        await i.editReply(`I couldn’t find Roblox user **${robloxUsername}**. Double-check the username or try again.`);
-        return;
-      }
+      if (!robloxUserId) { await i.editReply(`I couldn’t find Roblox user **${robloxUsername}**.`); return; }
 
-      // Instant publish
       try {
         await publishToRoblox(TOPIC, {
           type: 'discord_boost_admin',
           performedBy: i.user.id,
           targetDiscordId: targetDiscordUser?.id ?? null,
-          robloxUsername,
-          robloxUserId,
+          robloxUsername, robloxUserId,
           reward: { kind: 'pet', id: petId, name: petNameArg || null, amount, rarity: rarityArg },
           reason,
           meta: { resolvedVia },
+          discordTag: i.user.username,
           ts: Date.now(),
         });
-      } catch (e) {
-        console.warn('Publish failed; offline queue will still deliver:', e.message);
-      }
+      } catch {}
 
-      // Offline queue fallback
       try {
         await enqueueViaOpenCloud(robloxUserId, {
-          petId,
-          petName: petNameArg || null,
-          amount,
-          rarity: rarityArg,
-          reason,
-          admin: true,
+          petId, petName: petNameArg || null, amount, rarity: rarityArg, reason, admin: true,
+          discordId: i.user.id, discordTag: i.user.username
         });
-      } catch (e) {
-        console.error('Queue (DataStore) failed:', e);
-      }
-
-      // Webhook log
-      await sendPetWebhook('grantpet', {
-        robloxUsername,
-        robloxUserId,
-        discordUser: i.user.username,
-        discordId: i.user.id,
-        petId,
-        petName: petNameArg || null,
-        rarity: rarityArg,
-        amount,
-      });
+      } catch {}
 
       await i.editReply(
         [
           '✅ **Grant queued**',
           `• Roblox: **${robloxUsername}** (ID: ${robloxUserId})`,
           targetDiscordUser ? `• Discord: <@${targetDiscordUser.id}>` : null,
-          `• Reward: ${petNameArg ? `${petNameArg}` : `Pet ${petId}`} × ${amount}`,
+          `• Reward: ${petNameArg ? petNameArg : `Pet ${petId}`} × ${amount}`,
           `• Rarity: ${rarityArg}`,
           reason ? `• Reason: ${reason}` : null,
           `• Via: ${resolvedVia}`,
@@ -590,28 +289,21 @@ client.on(Events.InteractionCreate, async (i) => {
         ].filter(Boolean).join('\n')
       );
     } catch (e) {
-      console.error('grantpet error:', e);
-      try { await i.editReply('Failed to process grant. Check bot console for details.'); } catch {}
+      try { await i.editReply('Failed to process grant.'); } catch {}
     }
     return;
   }
 
-  // /resetdata
   if (i.commandName === 'resetdata') {
     if (!i.replied && !i.deferred) await i.deferReply({ flags: 64 });
-    if (!isOwner(i.user.id)) {
-      await i.editReply('This command is owner-only.');
-      return;
-    }
+    if (!isOwner(i.user.id)) { await i.editReply('This command is owner-only.'); return; }
 
     try {
       const targetDiscordUser = i.options.getUser('discorduser', false);
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
       const reason = i.options.getString('reason', false) || 'Admin requested reset';
 
-      let robloxUsername = null;
-      let robloxUserId = null;
-      let resolvedVia = null;
+      let robloxUsername = null, robloxUserId = null, resolvedVia = null;
 
       if (robloxUsernameArg) {
         robloxUsername = robloxUsernameArg;
@@ -620,24 +312,13 @@ client.on(Events.InteractionCreate, async (i) => {
       } else if (targetDiscordUser) {
         const links = loadMap();
         const linked = links[targetDiscordUser.id];
-        if (!linked) {
-          await i.editReply(
-            `Selected Discord user <@${targetDiscordUser.id}> is not linked.\nEither have them run /link or pass roblox_username directly.`
-          );
-          return;
-        }
+        if (!linked) { await i.editReply(`Selected Discord user <@${targetDiscordUser.id}> is not linked.`); return; }
         robloxUsername = linked;
         robloxUserId = await robloxUserIdFromUsername(robloxUsername);
         resolvedVia = 'discord_link';
-      } else {
-        await i.editReply('You must provide either roblox_username or discorduser.');
-        return;
-      }
+      } else { await i.editReply('You must provide either roblox_username or discorduser.'); return; }
 
-      if (!robloxUserId) {
-        await i.editReply(`I couldn’t find Roblox user **${robloxUsername}**. Double-check the username or try again.`);
-        return;
-      }
+      if (!robloxUserId) { await i.editReply(`I couldn’t find Roblox user **${robloxUsername}**.`); return; }
 
       try {
         await publishToRoblox(TOPIC, {
@@ -645,25 +326,19 @@ client.on(Events.InteractionCreate, async (i) => {
           action: 'reset_data',
           performedBy: i.user.id,
           targetDiscordId: targetDiscordUser?.id ?? null,
-          robloxUsername,
-          robloxUserId,
-          reason,
+          robloxUsername, robloxUserId, reason,
           meta: { resolvedVia },
+          discordTag: i.user.username,
           ts: Date.now(),
         });
-      } catch (e) {
-        console.warn('Publish failed; offline queue will still deliver reset:', e.message);
-      }
+      } catch {}
 
       try {
         await enqueueViaOpenCloud(robloxUserId, {
-          action: 'reset_data',
-          reason,
-          admin: true,
+          action: 'reset_data', reason, admin: true,
+          discordId: i.user.id, discordTag: i.user.username
         });
-      } catch (e) {
-        console.error('Queue (DataStore) failed (reset):', e);
-      }
+      } catch {}
 
       await i.editReply(
         [
@@ -676,39 +351,23 @@ client.on(Events.InteractionCreate, async (i) => {
         ].filter(Boolean).join('\n')
       );
     } catch (e) {
-      console.error('resetdata error:', e);
-      try { await i.editReply('Failed to process reset. Check bot console for details.'); } catch {}
+      try { await i.editReply('Failed to process reset.'); } catch {}
     }
     return;
   }
 });
 
-// --- Auto-grant when someone newly boosts the server ---
-client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+client.on(Events.GuildMemberUpdate, async (oldM, newM) => {
   try {
-    if (newMember.guild.id !== GUILD_ID) return;
-    const before = oldMember?.premiumSince;
-    const after = newMember?.premiumSince;
-
+    if (newM.guild.id !== GUILD_ID) return;
+    const before = oldM?.premiumSince, after = newM?.premiumSince;
     if (!before && after) {
       const links = loadMap();
-      const discordId = newMember.id;
+      const discordId = newM.id;
       const username = links[discordId];
-
-      if (!username) {
-        await newMember
-          .send('Thanks for boosting! Run /link <roblox_username> so I can send your in-game pet.')
-          .catch(() => {});
-        return;
-      }
-
+      if (!username) { await newM.send('Thanks for boosting! Run /link <roblox_username>.').catch(() => {}); return; }
       const robloxUserId = await robloxUserIdFromUsername(username);
-      if (!robloxUserId) {
-        await newMember
-          .send(`I couldn’t find Roblox user **${username}**. Please re-run /link with the correct name.`)
-          .catch(() => {});
-        return;
-      }
+      if (!robloxUserId) { await newM.send(`I couldn’t find Roblox user **${username}**.`).catch(() => {}); return; }
 
       const petId = Number(DEFAULT_PET_ID) || 5000000;
       const amount = Number(DEFAULT_AMOUNT) || 1;
@@ -723,54 +382,26 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
           robloxUserId,
           reward: { kind: 'pet', id: petId, amount, rarity },
           reason: reasonText,
+          discordTag: newM.user?.username,
           ts: Date.now(),
         });
-      } catch (e) {
-        console.warn('Publish failed; offline queue will still deliver:', e.message);
-      }
+      } catch {}
 
       try {
         await enqueueViaOpenCloud(robloxUserId, {
-          petId,
-          amount,
-          rarity,
-          reason: reasonText,
-          admin: false,
+          petId, amount, rarity, reason: reasonText, admin: false,
+          discordId, discordTag: newM.user?.username
         });
-      } catch (e) {
-        console.error('Queue (DataStore) failed:', e);
-      }
+      } catch {}
 
-      await sendPetWebhook('auto-boost', {
-        robloxUsername: username,
-        robloxUserId,
-        discordUser: newMember.user?.username,
-        discordId,
-        petId,
-        petName: null,
-        rarity,
-        amount,
-      });
-
-      await newMember
-        .send(`✨ Thanks for boosting! Your in-game reward (Pet ID **${petId}**, rarity **${rarity}**) is queued. Join the game to receive it!`)
-        .catch(() => {});
-
-      console.log(`Queued reward for Discord ${discordId} -> Roblox ${robloxUserId} (${rarity})`);
+      await newM.send(`✨ Thanks for boosting! Your reward (Pet ID **${petId}**, rarity **${rarity}**) is queued.`).catch(() => {});
     }
-  } catch (err) {
-    console.error('Boost handler error:', err);
-  }
+  } catch {}
 });
 
-// --- Ready ---
 client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
-  try {
-    await registerCommands(c.user.id);
-  } catch (e) {
-    console.error('Command register failed:', e);
-  }
+  try { await registerCommands(c.user.id); } catch (e) { console.error('Command register failed:', e); }
 });
 
 process.on('unhandledRejection', (r) => console.error('UnhandledRejection:', r));
