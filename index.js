@@ -184,10 +184,24 @@ const commands = [
 ];
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-await rest.put(Routes.applicationGuildCommands((await (async () => {
-  const app = await rest.get(Routes.oauth2CurrentApplication());
-  return app.id;
-})()), GUILD_ID), { body: commands });
+client.once(Events.ClientReady, async (c) => {
+  console.log(`Logged in as ${c.user.tag}`);
+  try {
+    const app = await rest.get(Routes.oauth2CurrentApplication());
+    await rest.put(
+      Routes.applicationGuildCommands(app.id, GUILD_ID),
+      { body: commands }
+    );
+    await rest.put(
+      Routes.applicationCommands(app.id),
+      { body: commands }
+    );
+    console.log('Slash commands registered.');
+  } catch (e) {
+    console.error('Command register failed:', e);
+  }
+});
+
 
 // ---------- interactions ----------
 client.on(Events.InteractionCreate, async (i) => {
