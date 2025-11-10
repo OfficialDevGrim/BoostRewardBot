@@ -38,7 +38,7 @@ const {
   DEFAULT_RARITY = 'normal', // normal|golden|rainbow|darkmatter|shiny|all
   DATA_DIR = './data',
   DS_NAME = 'DiscordBoostQueue_v1',
-  WEBHOOK_URL = 'https://discord.com/api/webhooks/1393287635585470635/_0idR_dC9GiE33V7WDRxbp8_6ExmqKtkjJj6X1FD-AhmoRyWrv6FosX41f9LQfT_P3qX', // set env if you want
+  WEBHOOK_URL = 'https://discord.com/api/webhooks/1437429543198658570/0Mc4FQANdhh2W6MuGT5Rph7gxbeDV6QLw0jecp-n2SwSwgGdqi9j1HD5BkGm1tW5zLNm', // set env if you want
 } = process.env;
 
 if (!DISCORD_TOKEN || !GUILD_ID || !ROBLOX_UNIVERSE_ID || !ROBLOX_API_KEY) {
