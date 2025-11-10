@@ -228,8 +228,11 @@ client.on(Events.InteractionCreate, async (i) => {
 
   if (i.commandName === 'grantpet') {
     if (!i.replied && !i.deferred) await i.deferReply({ flags: 64 });
-    if (!isOwner(i.user.id)) { await i.editReply('This command is owner-only.'); return; }
-
+    if (!isOwner(i.user.id)) {
+      await i.editReply('This command is owner-only.');
+      return;
+    }
+  
     try {
       const targetDiscordUser = i.options.getUser('discorduser', false);
       const robloxUsernameArg = i.options.getString('roblox_username', false)?.trim();
@@ -238,10 +241,10 @@ client.on(Events.InteractionCreate, async (i) => {
       const amountArg = i.options.getInteger('amount', false);
       const rarityArg = normRarity(i.options.getString('rarity', false) || DEFAULT_RARITY);
       const reason = i.options.getString('reason', false) || 'You’ve received a special admin reward!';
-
+  
       const amount = Number(amountArg ?? DEFAULT_AMOUNT) || 1;
-
       let robloxUsername = null, robloxUserId = null, resolvedVia = null;
+  
       if (robloxUsernameArg) {
         robloxUsername = robloxUsernameArg;
         robloxUserId = await robloxUserIdFromUsername(robloxUsername);
@@ -249,55 +252,80 @@ client.on(Events.InteractionCreate, async (i) => {
       } else if (targetDiscordUser) {
         const links = loadMap();
         const linked = links[targetDiscordUser.id];
-        if (!linked) { await i.editReply(`Selected Discord user <@${targetDiscordUser.id}> is not linked.`); return; }
+        if (!linked) {
+          await i.editReply(`Selected Discord user <@${targetDiscordUser.id}> is not linked.`);
+          return;
+        }
         robloxUsername = linked;
         robloxUserId = await robloxUserIdFromUsername(robloxUsername);
         resolvedVia = 'discord_link';
-      } else { await i.editReply('You must provide either roblox_username or discorduser.'); return; }
-
-      if (!robloxUserId) { await i.editReply(`I couldn’t find Roblox user **${robloxUsername}**.`); return; }
-
-      // Mutual exclusion: if petname provided, it overrides petid completely.
+      } else {
+        await i.editReply('You must provide either roblox_username or discorduser.');
+        return;
+      }
+  
+      if (!robloxUserId) {
+        await i.editReply(`I couldn’t find Roblox user **${robloxUsername}**.`);
+        return;
+      }
+  
       const payloadReward = petNameArg
         ? { kind: 'pet', name: petNameArg, amount, rarity: rarityArg }
         : { kind: 'pet', id: Number(petIdArg ?? DEFAULT_PET_ID) || 5000000, amount, rarity: rarityArg };
-
-      await publishToRoblox(TOPIC, {
-        type: 'discord_boost_admin',
-        performedBy: i.user.id,
-        discordTag: i.user.username,
-        targetDiscordId: targetDiscordUser?.id ?? null,
-        robloxUsername, robloxUserId,
-        reward: payloadReward,
-        reason,
-        meta: { resolvedVia },
-        ts: Date.now(),
-      });
-
-      await enqueueViaOpenCloud(robloxUserId, {
-        petId: payloadReward.id ?? (payloadReward.name || null),
-        petName: payloadReward.name || null,
-        amount, rarity: rarityArg, reason, admin: true,
-        discordId: i.user.id, discordTag: i.user.username
-      });
-
-      await i.editReply(
-        [
-          '✅ **Grant queued**',
-          `• Roblox: **${robloxUsername}** (ID: ${robloxUserId})`,
-          targetDiscordUser ? `• Discord: <@${targetDiscordUser.id}>` : null,
-          `• Reward: ${petNameArg ? petNameArg : `Pet ${payloadReward.id}`} × ${amount}`,
-          `• Rarity: ${rarityArg}`,
-          reason ? `• Reason: ${reason}` : null,
-          `• Via: ${resolvedVia}`,
-          '• Delivery: instant if online; otherwise on next join',
-        ].filter(Boolean).join('\n')
-      );
+  
+      let publishError = false, queueError = false;
+  
+      try {
+        await publishToRoblox(TOPIC, {
+          type: 'discord_boost_admin',
+          performedBy: i.user.id,
+          discordTag: i.user.username,
+          targetDiscordId: targetDiscordUser?.id ?? null,
+          robloxUsername, robloxUserId,
+          reward: payloadReward,
+          reason,
+          meta: { resolvedVia },
+          ts: Date.now(),
+        });
+      } catch {
+        publishError = true;
+      }
+  
+      try {
+        await enqueueViaOpenCloud(robloxUserId, {
+          petId: payloadReward.id ?? (payloadReward.name || null),
+          petName: payloadReward.name || null,
+          amount, rarity: rarityArg, reason, admin: true,
+          discordId: i.user.id, discordTag: i.user.username
+        });
+      } catch {
+        queueError = true;
+      }
+  
+      // Success reply if either publish OR queue worked
+      if (!publishError || !queueError) {
+        await i.editReply(
+          [
+            '✅ **Grant queued**',
+            `• Roblox: **${robloxUsername}** (ID: ${robloxUserId})`,
+            targetDiscordUser ? `• Discord: <@${targetDiscordUser.id}>` : null,
+            `• Reward: ${petNameArg ? petNameArg : `Pet ${payloadReward.id}`} × ${amount}`,
+            `• Rarity: ${rarityArg}`,
+            reason ? `• Reason: ${reason}` : null,
+            `• Via: ${resolvedVia}`,
+            '• Delivery: instant if online; otherwise on next join',
+          ].filter(Boolean).join('\n')
+        );
+      } else {
+        await i.editReply('⚠️ Grant queued locally but Roblox publish may have failed. Check console.');
+      }
     } catch (e) {
-      try { await i.editReply('Failed to process grant.'); } catch {}
+      console.error('Grantpet critical error:', e);
+      await i.editReply('❌ Unexpected internal error while processing grant.');
     }
     return;
   }
+  
 
   if (i.commandName === 'resetdata') {
     if (!i.replied && !i.deferred) await i.deferReply({ flags: 64 });
