@@ -38,7 +38,7 @@ const {
   ROBLOX_API_KEY,
   TOPIC = 'DiscordBoost',
   OWNER_IDS = '',
-  DEFAULT_PET_ID = '5000000',
+  DEFAULT_PET_ID = '109999',
   DEFAULT_AMOUNT = '1',
   DEFAULT_RARITY = 'normal', // normal|golden|rainbow|darkmatter|shiny|all
   DATA_DIR = './data',
@@ -424,7 +424,7 @@ client.on(Events.InteractionCreate, async (i) => {
         return;
       }
 
-      const petId = Number(DEFAULT_PET_ID) || 5000000;
+      const petId = Number(DEFAULT_PET_ID) || 109999;
       const amount = Number(DEFAULT_AMOUNT) || 1;
       const rarityOpt = normRarity(
         i.options.getString('rarity', false) || DEFAULT_RARITY
@@ -496,7 +496,7 @@ client.on(Events.InteractionCreate, async (i) => {
       const rarityArg = normRarity(i.options.getString('rarity', false) || DEFAULT_RARITY);
       const reason = i.options.getString('reason', false) || null;
 
-      const petId = Number(petIdArg ?? DEFAULT_PET_ID) || 5000000;
+      const petId = Number(petIdArg ?? DEFAULT_PET_ID) || 109999;
       const amount = Number(amountArg ?? DEFAULT_AMOUNT) || 1;
 
       let robloxUsername = null;
@@ -709,7 +709,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
         return;
       }
 
-      const petId = Number(DEFAULT_PET_ID) || 5000000;
+      const petId = Number(DEFAULT_PET_ID) || 109999;
       const amount = Number(DEFAULT_AMOUNT) || 1;
       const rarity = normRarity(DEFAULT_RARITY);
 
